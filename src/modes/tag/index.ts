@@ -6,7 +6,10 @@ import { createInitialComment } from "../../github/operations/comments/create-in
 import { setupBranch } from "../../github/operations/branch";
 import { configureGitAuth } from "../../github/operations/git-config";
 import { prepareMcpConfig } from "../../mcp/install-mcp-server";
-import { fetchGitHubData } from "../../github/data/fetcher";
+import {
+  fetchGitHubData,
+  extractTriggerTimestamp,
+} from "../../github/data/fetcher";
 import { createPrompt, generateDefaultPrompt } from "../../create-prompt";
 import { isEntityContext } from "../../github/context";
 import type { PreparedContext } from "../../create-prompt/types";
@@ -70,12 +73,15 @@ export const tagMode: Mode = {
     const commentData = await createInitialComment(octokit.rest, context);
     const commentId = commentData.id;
 
+    const triggerTime = extractTriggerTimestamp(context);
+
     const githubData = await fetchGitHubData({
       octokits: octokit,
       repository: `${context.repository.owner}/${context.repository.repo}`,
       prNumber: context.entityNumber.toString(),
       isPR: context.isPR,
       triggerUsername: context.actor,
+      triggerTime,
     });
 
     // Setup branch
@@ -83,8 +89,14 @@ export const tagMode: Mode = {
 
     // Configure git authentication if not using commit signing
     if (!context.inputs.useCommitSigning) {
+      // Use bot_id and bot_name from inputs directly
+      const user = {
+        login: context.inputs.botName,
+        id: parseInt(context.inputs.botId),
+      };
+
       try {
-        await configureGitAuth(githubToken, context, commentData.user);
+        await configureGitAuth(githubToken, context, user);
       } catch (error) {
         console.error("Failed to configure git authentication:", error);
         throw error;
@@ -125,6 +137,9 @@ export const tagMode: Mode = {
       "Read",
       "Write",
       "mcp__github_comment__update_claude_comment",
+      "mcp__github_ci__get_ci_status",
+      "mcp__github_ci__get_workflow_run_details",
+      "mcp__github_ci__download_job_log",
     ];
 
     // Add git commands when not using commit signing
@@ -177,7 +192,25 @@ export const tagMode: Mode = {
     githubData: FetchDataResult,
     useCommitSigning: boolean,
   ): string {
-    return generateDefaultPrompt(context, githubData, useCommitSigning);
+    const defaultPrompt = generateDefaultPrompt(
+      context,
+      githubData,
+      useCommitSigning,
+    );
+
+    // If a custom prompt is provided, inject it into the tag mode prompt
+    if (context.githubContext?.inputs?.prompt) {
+      return (
+        defaultPrompt +
+        `
+
+<custom_instructions>
+${context.githubContext.inputs.prompt}
+</custom_instructions>`
+      );
+    }
+
+    return defaultPrompt;
   },
 
   getSystemPrompt() {

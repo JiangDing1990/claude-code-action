@@ -8,6 +8,7 @@ import type {
   PullRequestReviewCommentEvent,
   WorkflowRunEvent,
 } from "@octokit/webhooks-types";
+import { CLAUDE_APP_BOT_ID, CLAUDE_BOT_LOGIN } from "./constants";
 // Custom types for GitHub Actions events that aren't webhooks
 export type WorkflowDispatchEvent = {
   action?: never;
@@ -23,6 +24,20 @@ export type WorkflowDispatchEvent = {
     login: string;
   };
   workflow: string;
+};
+
+export type RepositoryDispatchEvent = {
+  action: string;
+  client_payload?: Record<string, any>;
+  repository: {
+    name: string;
+    owner: {
+      login: string;
+    };
+  };
+  sender: {
+    login: string;
+  };
 };
 
 export type ScheduleEvent = {
@@ -47,6 +62,7 @@ const ENTITY_EVENT_NAMES = [
 
 const AUTOMATION_EVENT_NAMES = [
   "workflow_dispatch",
+  "repository_dispatch",
   "schedule",
   "workflow_run",
 ] as const;
@@ -74,7 +90,10 @@ type BaseContext = {
     branchPrefix: string;
     useStickyComment: boolean;
     useCommitSigning: boolean;
+    botId: string;
+    botName: string;
     allowedBots: string;
+    trackProgress: boolean;
   };
 };
 
@@ -91,10 +110,14 @@ export type ParsedGitHubContext = BaseContext & {
   isPR: boolean;
 };
 
-// Context for automation events (workflow_dispatch, schedule, workflow_run)
+// Context for automation events (workflow_dispatch, repository_dispatch, schedule, workflow_run)
 export type AutomationContext = BaseContext & {
   eventName: AutomationEventName;
-  payload: WorkflowDispatchEvent | ScheduleEvent | WorkflowRunEvent;
+  payload:
+    | WorkflowDispatchEvent
+    | RepositoryDispatchEvent
+    | ScheduleEvent
+    | WorkflowRunEvent;
 };
 
 // Union type for all contexts
@@ -121,7 +144,10 @@ export function parseGitHubContext(): GitHubContext {
       branchPrefix: process.env.BRANCH_PREFIX ?? "claude/",
       useStickyComment: process.env.USE_STICKY_COMMENT === "true",
       useCommitSigning: process.env.USE_COMMIT_SIGNING === "true",
+      botId: process.env.BOT_ID ?? String(CLAUDE_APP_BOT_ID),
+      botName: process.env.BOT_NAME ?? CLAUDE_BOT_LOGIN,
       allowedBots: process.env.ALLOWED_BOTS ?? "",
+      trackProgress: process.env.TRACK_PROGRESS === "true",
     },
   };
 
@@ -181,6 +207,13 @@ export function parseGitHubContext(): GitHubContext {
         ...commonFields,
         eventName: "workflow_dispatch",
         payload: context.payload as unknown as WorkflowDispatchEvent,
+      };
+    }
+    case "repository_dispatch": {
+      return {
+        ...commonFields,
+        eventName: "repository_dispatch",
+        payload: context.payload as unknown as RepositoryDispatchEvent,
       };
     }
     case "schedule": {

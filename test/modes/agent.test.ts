@@ -1,13 +1,23 @@
-import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
+import {
+  describe,
+  test,
+  expect,
+  beforeEach,
+  afterEach,
+  spyOn,
+  mock,
+} from "bun:test";
 import { agentMode } from "../../src/modes/agent";
 import type { GitHubContext } from "../../src/github/context";
 import { createMockContext, createMockAutomationContext } from "../mockContext";
 import * as core from "@actions/core";
+import * as gitConfig from "../../src/github/operations/git-config";
 
 describe("Agent Mode", () => {
   let mockContext: GitHubContext;
   let exportVariableSpy: any;
   let setOutputSpy: any;
+  let configureGitAuthSpy: any;
 
   beforeEach(() => {
     mockContext = createMockAutomationContext({
@@ -17,13 +27,22 @@ describe("Agent Mode", () => {
       () => {},
     );
     setOutputSpy = spyOn(core, "setOutput").mockImplementation(() => {});
+    // Mock configureGitAuth to prevent actual git commands from running
+    configureGitAuthSpy = spyOn(
+      gitConfig,
+      "configureGitAuth",
+    ).mockImplementation(async () => {
+      // Do nothing - prevent actual git config modifications
+    });
   });
 
   afterEach(() => {
     exportVariableSpy?.mockClear();
     setOutputSpy?.mockClear();
+    configureGitAuthSpy?.mockClear();
     exportVariableSpy?.mockRestore();
     setOutputSpy?.mockRestore();
+    configureGitAuthSpy?.mockRestore();
   });
 
   test("agent mode has correct properties", () => {
@@ -57,6 +76,11 @@ describe("Agent Mode", () => {
     });
     expect(agentMode.shouldTrigger(scheduleContext)).toBe(false);
 
+    const repositoryDispatchContext = createMockAutomationContext({
+      eventName: "repository_dispatch",
+    });
+    expect(agentMode.shouldTrigger(repositoryDispatchContext)).toBe(false);
+
     // Should NOT trigger for entity events without prompt
     const entityEvents = [
       "issue_comment",
@@ -73,6 +97,7 @@ describe("Agent Mode", () => {
     // Should trigger for ANY event when prompt is provided
     const allEvents = [
       "workflow_dispatch",
+      "repository_dispatch",
       "schedule",
       "issue_comment",
       "pull_request",
@@ -82,7 +107,9 @@ describe("Agent Mode", () => {
 
     allEvents.forEach((eventName) => {
       const contextWithPrompt =
-        eventName === "workflow_dispatch" || eventName === "schedule"
+        eventName === "workflow_dispatch" ||
+        eventName === "repository_dispatch" ||
+        eventName === "schedule"
           ? createMockAutomationContext({
               eventName,
               inputs: { prompt: "Do something" },
@@ -113,7 +140,22 @@ describe("Agent Mode", () => {
     // Set CLAUDE_ARGS environment variable
     process.env.CLAUDE_ARGS = "--model claude-sonnet-4 --max-turns 10";
 
-    const mockOctokit = {} as any;
+    const mockOctokit = {
+      rest: {
+        users: {
+          getAuthenticated: mock(() =>
+            Promise.resolve({
+              data: { login: "test-user", id: 12345 },
+            }),
+          ),
+          getByUsername: mock(() =>
+            Promise.resolve({
+              data: { login: "test-user", id: 12345 },
+            }),
+          ),
+        },
+      },
+    } as any;
     const result = await agentMode.prepare({
       context: contextWithCustomArgs,
       octokit: mockOctokit,
@@ -152,7 +194,22 @@ describe("Agent Mode", () => {
     // In v1-dev, we only have the unified prompt field
     contextWithPrompts.inputs.prompt = "Custom prompt content";
 
-    const mockOctokit = {} as any;
+    const mockOctokit = {
+      rest: {
+        users: {
+          getAuthenticated: mock(() =>
+            Promise.resolve({
+              data: { login: "test-user", id: 12345 },
+            }),
+          ),
+          getByUsername: mock(() =>
+            Promise.resolve({
+              data: { login: "test-user", id: 12345 },
+            }),
+          ),
+        },
+      },
+    } as any;
     await agentMode.prepare({
       context: contextWithPrompts,
       octokit: mockOctokit,
@@ -161,9 +218,11 @@ describe("Agent Mode", () => {
 
     // Note: We can't easily test file creation in this unit test,
     // but we can verify the method completes without errors
-    // Agent mode now includes MCP config even with empty user args
+    // With our conditional MCP logic, agent mode with no allowed tools
+    // should not include any MCP config
     const callArgs = setOutputSpy.mock.calls[0];
     expect(callArgs[0]).toBe("claude_args");
-    expect(callArgs[1]).toContain("--mcp-config");
+    // Should be empty or just whitespace when no MCP servers are included
+    expect(callArgs[1]).not.toContain("--mcp-config");
   });
 });

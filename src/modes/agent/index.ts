@@ -5,6 +5,41 @@ import type { PreparedContext } from "../../create-prompt/types";
 import { prepareMcpConfig } from "../../mcp/install-mcp-server";
 import { parseAllowedTools } from "./parse-tools";
 import { configureGitAuth } from "../../github/operations/git-config";
+import type { GitHubContext } from "../../github/context";
+import { isEntityContext } from "../../github/context";
+
+/**
+ * Extract GitHub context as environment variables for agent mode
+ */
+function extractGitHubContext(context: GitHubContext): Record<string, string> {
+  const envVars: Record<string, string> = {};
+
+  // Basic repository info
+  envVars.GITHUB_REPOSITORY = context.repository.full_name;
+  envVars.GITHUB_TRIGGER_ACTOR = context.actor;
+  envVars.GITHUB_EVENT_NAME = context.eventName;
+
+  // Entity-specific context (PR/issue numbers, branches, etc.)
+  if (isEntityContext(context)) {
+    if (context.isPR) {
+      envVars.GITHUB_PR_NUMBER = String(context.entityNumber);
+
+      // Extract branch info from payload if available
+      if (
+        context.payload &&
+        "pull_request" in context.payload &&
+        context.payload.pull_request
+      ) {
+        envVars.GITHUB_BASE_REF = context.payload.pull_request.base?.ref || "";
+        envVars.GITHUB_HEAD_REF = context.payload.pull_request.head?.ref || "";
+      }
+    } else {
+      envVars.GITHUB_ISSUE_NUMBER = String(context.entityNumber);
+    }
+  }
+
+  return envVars;
+}
 
 /**
  * Agent mode implementation.
@@ -42,22 +77,16 @@ export const agentMode: Mode = {
     return false;
   },
 
-  async prepare({
-    context,
-    githubToken,
-    octokit,
-  }: ModeOptions): Promise<ModeResult> {
+  async prepare({ context, githubToken }: ModeOptions): Promise<ModeResult> {
     // Configure git authentication for agent mode (same as tag mode)
     if (!context.inputs.useCommitSigning) {
-      try {
-        // Get the authenticated user (will be claude[bot] when using Claude App token)
-        const { data: authenticatedUser } =
-          await octokit.rest.users.getAuthenticated();
-        const user = {
-          login: authenticatedUser.login,
-          id: authenticatedUser.id,
-        };
+      // Use bot_id and bot_name from inputs directly
+      const user = {
+        login: context.inputs.botName,
+        id: parseInt(context.inputs.botId),
+      };
 
+      try {
         // Use the shared git configuration function
         await configureGitAuth(githubToken, context, user);
       } catch (error) {
@@ -136,6 +165,14 @@ export const agentMode: Mode = {
   },
 
   generatePrompt(context: PreparedContext): string {
+    // Inject GitHub context as environment variables
+    if (context.githubContext) {
+      const envVars = extractGitHubContext(context.githubContext);
+      for (const [key, value] of Object.entries(envVars)) {
+        core.exportVariable(key, value);
+      }
+    }
+
     // Agent mode uses prompt field
     if (context.prompt) {
       return context.prompt;

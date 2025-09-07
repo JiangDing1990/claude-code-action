@@ -2,6 +2,15 @@
 
 These examples show how to configure Claude to act automatically based on GitHub events. When you provide a `prompt` input, the action automatically runs in agent mode without requiring manual @mentions. Without a `prompt`, it runs in interactive mode, responding to @claude mentions.
 
+## Mode Detection & Tracking Comments
+
+The action automatically detects which mode to use based on your configuration:
+
+- **Interactive Mode** (no `prompt` input): Responds to @claude mentions, creates tracking comments with progress indicators
+- **Automation Mode** (with `prompt` input): Executes immediately, **does not create tracking comments**
+
+> **Note**: In v1, automation mode intentionally does not create tracking comments by default to reduce noise in automated workflows. If you need progress tracking, use the `track_progress: true` input parameter.
+
 ## Supported GitHub Events
 
 This action supports the following GitHub events ([learn more GitHub event triggers](https://docs.github.com/en/actions/writing-workflows/choosing-when-your-workflow-runs/events-that-trigger-workflows)):
@@ -12,7 +21,7 @@ This action supports the following GitHub events ([learn more GitHub event trigg
 - `issues` - When issues are opened or assigned
 - `pull_request_review` - When PR reviews are submitted
 - `pull_request_review_comment` - When comments are made on PR reviews
-- `repository_dispatch` - Custom events triggered via API (coming soon)
+- `repository_dispatch` - Custom events triggered via API
 - `workflow_dispatch` - Manual workflow triggers (coming soon)
 
 ## Automated Documentation Updates

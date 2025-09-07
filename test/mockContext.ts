@@ -1,6 +1,7 @@
 import type {
   ParsedGitHubContext,
   AutomationContext,
+  RepositoryDispatchEvent,
 } from "../src/github/context";
 import type {
   IssuesEvent,
@@ -9,6 +10,7 @@ import type {
   PullRequestReviewEvent,
   PullRequestReviewCommentEvent,
 } from "@octokit/webhooks-types";
+import { CLAUDE_APP_BOT_ID, CLAUDE_BOT_LOGIN } from "../src/github/constants";
 
 const defaultInputs = {
   prompt: "",
@@ -18,7 +20,10 @@ const defaultInputs = {
   branchPrefix: "claude/",
   useStickyComment: false,
   useCommitSigning: false,
+  botId: String(CLAUDE_APP_BOT_ID),
+  botName: CLAUDE_BOT_LOGIN,
   allowedBots: "",
+  trackProgress: false,
 };
 
 const defaultRepository = {
@@ -75,6 +80,33 @@ export const createMockAutomationContext = (
     : { ...defaultInputs };
 
   return { ...baseContext, ...overrides, inputs: mergedInputs };
+};
+
+export const mockRepositoryDispatchContext: AutomationContext = {
+  runId: "1234567890",
+  eventName: "repository_dispatch",
+  eventAction: undefined,
+  repository: defaultRepository,
+  actor: "automation-user",
+  payload: {
+    action: "trigger-analysis",
+    client_payload: {
+      source: "issue-detective",
+      issue_number: 42,
+      repository_name: "test-owner/test-repo",
+      analysis_type: "bug-report",
+    },
+    repository: {
+      name: "test-repo",
+      owner: {
+        login: "test-owner",
+      },
+    },
+    sender: {
+      login: "automation-user",
+    },
+  } as RepositoryDispatchEvent,
+  inputs: defaultInputs,
 };
 
 export const mockIssueOpenedContext: ParsedGitHubContext = {
