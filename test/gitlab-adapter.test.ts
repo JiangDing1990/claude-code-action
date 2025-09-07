@@ -2,7 +2,7 @@
  * GitLab 适配器测试
  */
 
-import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach } from "bun:test";
 import { GitLabAdapter } from "../src/platforms/gitlab/adapter";
 import { detectPlatform } from "../src/platforms/shared/platform-detector";
 
