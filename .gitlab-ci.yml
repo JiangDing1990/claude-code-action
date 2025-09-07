@@ -1,0 +1,199 @@
+# GitLab CI/CD 配置文件，用于运行 Claude Code
+# 适配自 GitHub Actions 工作流
+
+# 定义阶段
+stages:
+  - prepare
+  - execute
+  - cleanup
+
+# 全局变量
+variables:
+  # 默认配置
+  TRIGGER_PHRASE: "@claude"
+  BRANCH_PREFIX: "claude/"
+  USE_STICKY_COMMENT: "false"
+  USE_COMMIT_SIGNING: "false"
+  ALLOWED_BOTS: ""
+
+  # GitLab 特定配置
+  GITLAB_PROJECT_ID: $CI_PROJECT_ID
+  REPO_DIR: $CI_PROJECT_DIR
+  GITLAB_TOKEN: $CLAUDE_GITLAB_TOKEN # 需要在项目变量中设置
+
+# 缓存依赖
+cache:
+  paths:
+    - node_modules/
+    - ~/.bun/install/cache/
+
+# 准备阶段 - 检查触发条件并验证权限
+claude_prepare:
+  stage: prepare
+  image: oven/bun:1
+  rules:
+    # 合并请求事件
+    - if: "$CI_MERGE_REQUEST_IID"
+      variables:
+        EVENT_TYPE: "merge_request"
+    # 议题分配事件（通过 webhook 触发）
+    - if: '$CI_PIPELINE_SOURCE == "trigger" && $TRIGGER_EVENT == "issue_assigned"'
+      variables:
+        EVENT_TYPE: "issue"
+    # 手动触发（automation 模式）
+    - if: '$CI_PIPELINE_SOURCE == "web" && $PROMPT'
+      variables:
+        EVENT_TYPE: "manual"
+    # 定时任务触发
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      variables:
+        EVENT_TYPE: "schedule"
+  script:
+    - echo "开始准备 Claude Code 执行环境..."
+    - echo "事件类型: $EVENT_TYPE"
+    - echo "项目 ID: $CI_PROJECT_ID"
+    - echo "合并请求 IID: $CI_MERGE_REQUEST_IID"
+
+    # 安装依赖
+    - bun install --frozen-lockfile
+
+    # 检查环境变量
+    - |
+      if [ -z "$CLAUDE_GITLAB_TOKEN" ]; then
+        echo "错误: 需要设置 CLAUDE_GITLAB_TOKEN 项目变量"
+        exit 1
+      fi
+
+    # 设置 GitLab 平台环境变量
+    - export GITLAB_CI=true
+    - export PLATFORM=gitlab
+
+    # 运行准备脚本
+    - bun run src/entrypoints/prepare-gitlab.ts
+
+    # 检查是否应该继续执行
+    - |
+      if [ "$CONTAINS_TRIGGER" != "true" ]; then
+        echo "未检测到触发条件，跳过执行"
+        exit 0
+      fi
+  artifacts:
+    reports:
+      dotenv: prepare.env
+    paths:
+      - prepare.env
+    expire_in: 1 hour
+  timeout: 10 minutes
+
+# 执行阶段 - 运行 Claude Code
+claude_execute:
+  stage: execute
+  image: oven/bun:1
+  needs:
+    - job: claude_prepare
+      artifacts: true
+  rules:
+    - if: "$CI_MERGE_REQUEST_IID || $PROMPT"
+      when: on_success
+  script:
+    - echo "开始执行 Claude Code..."
+
+    # 加载准备阶段的环境变量
+    - source prepare.env 2>/dev/null || true
+
+    # 设置 MCP 服务器环境变量
+    - export GITLAB_PROJECT_ID=$CI_PROJECT_ID
+    - export BRANCH_NAME=${BRANCH_PREFIX}${CI_MERGE_REQUEST_IID:-manual}-${CI_PIPELINE_ID}
+    - export BASE_BRANCH=${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-$CI_DEFAULT_BRANCH}
+
+    # 运行 Claude Code 执行逻辑
+    - bun run base-action/dist/index.js
+  artifacts:
+    paths:
+      - claude-output/
+    reports:
+      junit: claude-output/results.xml
+    expire_in: 1 week
+  timeout: 30 minutes
+  retry:
+    max: 1
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+
+# 清理阶段 - 更新评论和清理资源
+claude_cleanup:
+  stage: cleanup
+  image: oven/bun:1
+  needs:
+    - job: claude_execute
+      artifacts: true
+  rules:
+    - if: "$CI_MERGE_REQUEST_IID || $PROMPT"
+      when: always
+  script:
+    - echo "开始清理和后处理..."
+
+    # 更新评论链接
+    - bun run src/entrypoints/update-comment-link.ts
+
+    # 清理临时文件
+    - rm -rf /tmp/claude-*
+  timeout: 5 minutes
+
+# 仅用于合并请求的简化版本
+claude_mr_only:
+  stage: execute
+  image: oven/bun:1
+  rules:
+    - if: '$CI_MERGE_REQUEST_IID && $DISABLE_FULL_PIPELINE == "true"'
+  script:
+    - echo "运行简化版 Claude Code（仅限合并请求）"
+    - bun install --frozen-lockfile
+
+    # 设置必要的环境变量
+    - export GITLAB_CI=true
+    - export PLATFORM=gitlab
+    - export GITLAB_PROJECT_ID=$CI_PROJECT_ID
+    - export BRANCH_NAME=${BRANCH_PREFIX}mr-${CI_MERGE_REQUEST_IID}
+    - export BASE_BRANCH=$CI_MERGE_REQUEST_TARGET_BRANCH_NAME
+
+    # 检查触发条件并执行
+    - bun run src/entrypoints/prepare-gitlab.ts
+    - |
+      if [ "$CONTAINS_TRIGGER" == "true" ]; then
+        bun run base-action/dist/index.js
+      else
+        echo "未检测到触发条件"
+      fi
+  timeout: 30 minutes
+
+# 开发调试作业（仅在特定分支触发）
+claude_debug:
+  stage: execute
+  image: oven/bun:1
+  rules:
+    - if: '$CI_COMMIT_REF_NAME =~ /^feat\/.*gitlab.*/ && $DEBUG_MODE == "true"'
+      when: manual
+  script:
+    - echo "调试模式：检查 GitLab 适配实现"
+    - bun install --frozen-lockfile
+
+    # 运行类型检查
+    - bun run typecheck
+
+    # 运行格式检查
+    - bun run format:check
+
+    # 运行测试
+    - bun test --coverage
+
+    # 测试 GitLab API 连接
+    - bun run src/platforms/gitlab/api/client.ts --test
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage/cobertura-coverage.xml
+  coverage: '/Lines\s*:\s*(\d+\.\d+)%/'
+  timeout: 15 minutes
